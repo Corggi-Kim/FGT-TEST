@@ -137,6 +137,15 @@ os.makedirs(REQUEST_TRACE_LOG_DIR, exist_ok=True)
 os.makedirs(CONF_DIR, exist_ok=True)
 os.makedirs(DEBUG_DIR, exist_ok=True)
 
+def append_request_trace_log(tag: str, line: str):
+    try:
+        os.makedirs(REQUEST_TRACE_LOG_DIR, exist_ok=True)
+        fn = os.path.join(REQUEST_TRACE_LOG_DIR, f"{tag}_{datetime.date.today().strftime('%Y%m%d')}.log")
+        with open(fn, "a", encoding="utf-8") as f:
+            f.write((line or "") + "\n")
+    except Exception:
+        pass
+
 DOMAIN_EMAIL_SUFFIX = "lskglobal.com"
 
 BUS_LOGIN_URL = "https://bus.lskglobal.com/L4/Common/Login.aspx"
@@ -2398,6 +2407,11 @@ class NewItemsViewer(QDialog):
     def _on_worker_progress(self, cur: int, total: int, message: str):
         self.status_lbl.setText(message)
         self._last_worker_msg = message
+        msg = (message or "").strip()
+        if msg.startswith("[REQUEST_READ]"):
+            append_request_trace_log("request_read", msg)
+        elif msg.startswith("[REQUEST_PERF]"):
+            append_request_trace_log("request_perf", msg)
         QApplication.processEvents()
 
     def _on_worker_finished(self, ok_cnt: int, fail_cnt: int):
@@ -2959,7 +2973,6 @@ class CreateWorker(QObject):
                     f"exception={read_result.get('exception')}"
                 )
                 self.progress.emit(0, 0, read_log)
-                _append_request_trace("request_read", read_log)
 
                 perf_log = (
                     "[REQUEST_PERF] "
@@ -2974,7 +2987,6 @@ class CreateWorker(QObject):
                     f"final_state={perf_result.get('final_state')}"
                 )
                 self.progress.emit(0, 0, perf_log)
-                _append_request_trace("request_perf", perf_log)
 
             stage = "OPEN_LOGIN_PAGE"
             d.get(BUS_LOGIN_URL)
