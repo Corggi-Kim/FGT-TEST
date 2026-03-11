@@ -7,7 +7,7 @@
 #            └─ fgt.ico
 #
 # 2) 실행 시 생성/사용 경로 (코드에서 자동 생성)
-#    - C:\FGT\Log       : 실행 로그(access_YYYYMMDD.log)
+#    - C:\FGT\Log\Access : 실행 로그(access_YYYYMMDD.log)
 #    - C:\FGT\conf      : 설정(login.json, theme 등)
 #    - C:\FGT\ef         : 엑셀파일 다운로드
 #    - C:\FGT\debug   : 디버그 파일
@@ -103,7 +103,7 @@ HELP_TEXT = r"""[Folder Grant Tool 기능 설명]
 
 8) 로그
   - 하단 로그 창에 요약과 결과가 표시됩니다(필터링된 핵심 메시지 위주).
-  - 일자별 파일로 저장: C:\FGT\Log\access_YYYYMMDD.log
+  - 일자별 파일로 저장: C:\FGT\Log\Access\access_YYYYMMDD.log
 
 9) 테마/로고/도움말
   - 우상단 🌙/🌞 버튼으로 라이트/다크 테마 전환.
@@ -117,6 +117,8 @@ HELP_TEXT = r"""[Folder Grant Tool 기능 설명]
 
 
 LOG_DIR = r"C:\FGT\Log"
+ACCESS_LOG_DIR = os.path.join(LOG_DIR, "Access")
+REQUEST_TRACE_LOG_DIR = os.path.join(LOG_DIR, "RequestTrace")
 CONF_DIR = r"C:\FGT\conf"
 DL_DIR = r"C:\FGT\ef"
 DEBUG_DIR = r"C:\FGT\debug"
@@ -130,6 +132,8 @@ ICON_FILE = "fgt.ico"
 
 os.makedirs(DL_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(ACCESS_LOG_DIR, exist_ok=True)
+os.makedirs(REQUEST_TRACE_LOG_DIR, exist_ok=True)
 os.makedirs(CONF_DIR, exist_ok=True)
 os.makedirs(DEBUG_DIR, exist_ok=True)
 
@@ -2785,6 +2789,14 @@ class CreateWorker(QObject):
             def _fmt_ts():
                 return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+            def _append_request_trace(tag: str, line: str):
+                try:
+                    fn = os.path.join(REQUEST_TRACE_LOG_DIR, f"{tag}_{datetime.date.today().strftime('%Y%m%d')}.log")
+                    with open(fn, "a", encoding="utf-8") as f:
+                        f.write(line + "\n")
+                except Exception:
+                    pass
+
             def is_loading_state(driver):
                 out = {"loading": False, "reason": "no loading marker", "exception": None}
                 try:
@@ -2947,6 +2959,7 @@ class CreateWorker(QObject):
                     f"exception={read_result.get('exception')}"
                 )
                 self.progress.emit(0, 0, read_log)
+                _append_request_trace("request_read", read_log)
 
                 perf_log = (
                     "[REQUEST_PERF] "
@@ -2961,6 +2974,7 @@ class CreateWorker(QObject):
                     f"final_state={perf_result.get('final_state')}"
                 )
                 self.progress.emit(0, 0, perf_log)
+                _append_request_trace("request_perf", perf_log)
 
             stage = "OPEN_LOGIN_PAGE"
             d.get(BUS_LOGIN_URL)
@@ -4934,7 +4948,7 @@ class AccessManager(QMainWindow):
         self.log.insertPlainText(block)
         self.log.ensureCursorVisible()
 
-        fn = os.path.join(LOG_DIR, f"access_{datetime.date.today().strftime('%Y%m%d')}.log")
+        fn = os.path.join(ACCESS_LOG_DIR, f"access_{datetime.date.today().strftime('%Y%m%d')}.log")
         with open(fn, "a", encoding="utf-8") as f:
             f.write(block)
 
