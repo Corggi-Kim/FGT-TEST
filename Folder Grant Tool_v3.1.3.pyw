@@ -138,11 +138,20 @@ os.makedirs(CONF_DIR, exist_ok=True)
 os.makedirs(DEBUG_DIR, exist_ok=True)
 
 def append_request_trace_log(tag: str, line: str):
+    txt = (line or "") + "\n"
+    fn = os.path.join(REQUEST_TRACE_LOG_DIR, f"{tag}_{datetime.date.today().strftime('%Y%m%d')}.log")
     try:
         os.makedirs(REQUEST_TRACE_LOG_DIR, exist_ok=True)
-        fn = os.path.join(REQUEST_TRACE_LOG_DIR, f"{tag}_{datetime.date.today().strftime('%Y%m%d')}.log")
         with open(fn, "a", encoding="utf-8") as f:
-            f.write((line or "") + "\n")
+            f.write(txt)
+        return
+    except Exception:
+        pass
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        fallback = os.path.join(LOG_DIR, f"{tag}_{datetime.date.today().strftime('%Y%m%d')}.log")
+        with open(fallback, "a", encoding="utf-8") as f:
+            f.write(txt)
     except Exception:
         pass
 
@@ -2803,14 +2812,6 @@ class CreateWorker(QObject):
             def _fmt_ts():
                 return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            def _append_request_trace(tag: str, line: str):
-                try:
-                    fn = os.path.join(REQUEST_TRACE_LOG_DIR, f"{tag}_{datetime.date.today().strftime('%Y%m%d')}.log")
-                    with open(fn, "a", encoding="utf-8") as f:
-                        f.write(line + "\n")
-                except Exception:
-                    pass
-
             def is_loading_state(driver):
                 out = {"loading": False, "reason": "no loading marker", "exception": None}
                 try:
@@ -2973,6 +2974,7 @@ class CreateWorker(QObject):
                     f"exception={read_result.get('exception')}"
                 )
                 self.progress.emit(0, 0, read_log)
+                append_request_trace_log("request_read", read_log)
 
                 perf_log = (
                     "[REQUEST_PERF] "
@@ -2987,6 +2989,7 @@ class CreateWorker(QObject):
                     f"final_state={perf_result.get('final_state')}"
                 )
                 self.progress.emit(0, 0, perf_log)
+                append_request_trace_log("request_perf", perf_log)
 
             stage = "OPEN_LOGIN_PAGE"
             d.get(BUS_LOGIN_URL)
