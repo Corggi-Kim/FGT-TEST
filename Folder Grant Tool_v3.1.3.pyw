@@ -7,7 +7,7 @@
 #            └─ fgt.ico
 #
 # 2) 실행 시 생성/사용 경로 (코드에서 자동 생성)
-#    - C:\FGT\Log       : 실행 로그(access_YYYYMMDD.log)
+#    - C:\FGT\Log\Access : 실행 로그(access_YYYYMMDD.log)
 #    - C:\FGT\conf      : 설정(login.json, theme 등)
 #    - C:\FGT\ef         : 엑셀파일 다운로드
 #    - C:\FGT\debug   : 디버그 파일
@@ -103,7 +103,7 @@ HELP_TEXT = r"""[Folder Grant Tool 기능 설명]
 
 8) 로그
   - 하단 로그 창에 요약과 결과가 표시됩니다(필터링된 핵심 메시지 위주).
-  - 일자별 파일로 저장: C:\FGT\Log\access_YYYYMMDD.log
+  - 일자별 파일로 저장: C:\FGT\Log\Access\access_YYYYMMDD.log
 
 9) 테마/로고/도움말
   - 우상단 🌙/🌞 버튼으로 라이트/다크 테마 전환.
@@ -117,6 +117,8 @@ HELP_TEXT = r"""[Folder Grant Tool 기능 설명]
 
 
 LOG_DIR = r"C:\FGT\Log"
+ACCESS_LOG_DIR = os.path.join(LOG_DIR, "Access")
+REQUEST_TRACE_LOG_DIR = os.path.join(LOG_DIR, "RequestTrace")
 CONF_DIR = r"C:\FGT\conf"
 DL_DIR = r"C:\FGT\ef"
 DEBUG_DIR = r"C:\FGT\debug"
@@ -130,8 +132,19 @@ ICON_FILE = "fgt.ico"
 
 os.makedirs(DL_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(ACCESS_LOG_DIR, exist_ok=True)
+os.makedirs(REQUEST_TRACE_LOG_DIR, exist_ok=True)
 os.makedirs(CONF_DIR, exist_ok=True)
 os.makedirs(DEBUG_DIR, exist_ok=True)
+
+def append_request_trace_log(tag: str, line: str):
+    try:
+        os.makedirs(REQUEST_TRACE_LOG_DIR, exist_ok=True)
+        fn = os.path.join(REQUEST_TRACE_LOG_DIR, f"{tag}_{datetime.date.today().strftime('%Y%m%d')}.log")
+        with open(fn, "a", encoding="utf-8") as f:
+            f.write((line or "") + "\n")
+    except Exception:
+        pass
 
 DOMAIN_EMAIL_SUFFIX = "lskglobal.com"
 
@@ -2394,6 +2407,11 @@ class NewItemsViewer(QDialog):
     def _on_worker_progress(self, cur: int, total: int, message: str):
         self.status_lbl.setText(message)
         self._last_worker_msg = message
+        msg = (message or "").strip()
+        if msg.startswith("[REQUEST_READ]"):
+            append_request_trace_log("request_read", msg)
+        elif msg.startswith("[REQUEST_PERF]"):
+            append_request_trace_log("request_perf", msg)
         QApplication.processEvents()
 
     def _on_worker_finished(self, ok_cnt: int, fail_cnt: int):
@@ -2678,6 +2696,9 @@ class CreateWorker(QObject):
         stage = "INIT"
         bus_msg_title = ""
         bus_msg_body = ""
+        read_mode = (self.creds.get("request_read_mode") or "observe_only").strip().lower()
+        if read_mode not in ("legacy_only", "observe_only", "state_driven"):
+            read_mode = "observe_only"
         try:
             options = webdriver.ChromeOptions()
             options.add_argument("--headless=new")
@@ -2779,6 +2800,194 @@ class CreateWorker(QObject):
             def refocus_first_iframe(driver, reload_url=None):
                 return enter_first_iframe(driver, timeout=5, reload_url=reload_url)
 
+            def _fmt_ts():
+                return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            def _append_request_trace(tag: str, line: str):
+                try:
+                    fn = os.path.join(REQUEST_TRACE_LOG_DIR, f"{tag}_{datetime.date.today().strftime('%Y%m%d')}.log")
+                    with open(fn, "a", encoding="utf-8") as f:
+                        f.write(line + "\n")
+                except Exception:
+                    pass
+
+            def is_loading_state(driver):
+                out = {"loading": False, "reason": "no loading marker", "exception": None}
+                try:
+                    markers = [
+                        (By.CSS_SELECTOR, ".loading"),
+                        (By.CSS_SELECTOR, ".blockUI"),
+                        (By.CSS_SELECTOR, ".blockOverlay"),
+                        (By.CSS_SELECTOR, ".swal2-container.swal2-shown"),
+                    ]
+                    hits = []
+                    for by, sel in markers:
+                        nodes = driver.find_elements(by, sel)
+                        vis = [n for n in nodes if n.is_displayed()]
+                        if vis:
+                            hits.append(sel)
+                    if hits:
+                        out["loading"] = True
+                        out["reason"] = "visible: " + ",".join(hits)
+                except Exception as e:
+                    out["exception"] = str(e)
+                    out["reason"] = "loading check failed"
+                return out
+
+            def get_request_row_count(driver):
+                out = {"row_count": 0, "table_found": False, "exception": None}
+                try:
+                    rows = driver.find_elements(By.CSS_SELECTOR, "tbody tr")
+                    out["table_found"] = True
+                    count = 0
+                    for tr in rows:
+                        try:
+                            if "dataTables_empty" in (tr.get_attribute("class") or ""):
+                                continue
+                        except Exception:
+                            pass
+                        count += 1
+                    out["row_count"] = count
+                except Exception as e:
+                    out["exception"] = str(e)
+                return out
+
+            def has_empty_list_message(driver):
+                out = {
+                    "empty_message": False,
+                    "matched_selector": "",
+                    "matched_text": "",
+                    "exception": None,
+                }
+                try:
+                    empty_cells = driver.find_elements(By.CSS_SELECTOR, "tbody td.dataTables_empty")
+                    for el in empty_cells:
+                        txt = normalize_text(el.text)
+                        if txt:
+                            out["empty_message"] = True
+                            out["matched_selector"] = "tbody td.dataTables_empty"
+                            out["matched_text"] = txt
+                            return out
+
+                    info_els = driver.find_elements(By.CSS_SELECTOR, ".dataTables_info")
+                    if info_els:
+                        txt = normalize_text(info_els[0].text)
+                        if txt and (" 0 " in f" {txt} " or "0건" in txt or "없" in txt):
+                            out["empty_message"] = True
+                            out["matched_selector"] = ".dataTables_info"
+                            out["matched_text"] = txt
+                except Exception as e:
+                    out["exception"] = str(e)
+                return out
+
+            def read_request_list_state(driver, page_name="new_request_list"):
+                ts0 = time.perf_counter()
+                result = {
+                    "timestamp": _fmt_ts(),
+                    "page_name": page_name,
+                    "loading": False,
+                    "row_count": 0,
+                    "empty_message": False,
+                    "state": "UNCERTAIN",
+                    "reason": "not evaluated",
+                    "exception": None,
+                    "details": {},
+                }
+                perf = {
+                    "cycle_id": int(time.time() * 1000),
+                    "timestamp": result["timestamp"],
+                    "refresh_ms": 0,
+                    "loading_check_ms": 0,
+                    "row_count_ms": 0,
+                    "empty_msg_ms": 0,
+                    "state_decision_ms": 0,
+                    "total_ms": 0,
+                    "final_state": "UNCERTAIN",
+                }
+
+                try:
+                    t = time.perf_counter()
+                    loading_res = is_loading_state(driver)
+                    perf["loading_check_ms"] = int((time.perf_counter() - t) * 1000)
+
+                    t = time.perf_counter()
+                    row_res = get_request_row_count(driver)
+                    perf["row_count_ms"] = int((time.perf_counter() - t) * 1000)
+
+                    t = time.perf_counter()
+                    empty_res = has_empty_list_message(driver)
+                    perf["empty_msg_ms"] = int((time.perf_counter() - t) * 1000)
+
+                    result["loading"] = bool(loading_res.get("loading"))
+                    result["row_count"] = int(row_res.get("row_count") or 0)
+                    result["empty_message"] = bool(empty_res.get("empty_message"))
+                    result["details"] = {
+                        "loading": loading_res,
+                        "row_count": row_res,
+                        "empty_message": empty_res,
+                    }
+
+                    t = time.perf_counter()
+                    if loading_res.get("exception") or row_res.get("exception") or empty_res.get("exception"):
+                        result["state"] = "ERROR"
+                        result["reason"] = "reader exception in at least one stage"
+                        result["exception"] = {
+                            "loading": loading_res.get("exception"),
+                            "row_count": row_res.get("exception"),
+                            "empty_message": empty_res.get("exception"),
+                        }
+                    elif result["loading"]:
+                        result["state"] = "LOADING"
+                        result["reason"] = loading_res.get("reason") or "loading marker detected"
+                    elif result["row_count"] >= 1:
+                        result["state"] = "HAS_ITEMS"
+                        result["reason"] = f"row_count={result['row_count']}"
+                    elif result["row_count"] == 0 and result["empty_message"]:
+                        result["state"] = "EMPTY_CONFIRMED"
+                        result["reason"] = "loading finished and empty message detected"
+                    else:
+                        result["state"] = "UNCERTAIN"
+                        result["reason"] = "loading finished but empty condition not clearly confirmed"
+                    perf["state_decision_ms"] = int((time.perf_counter() - t) * 1000)
+                    perf["final_state"] = result["state"]
+                except Exception as e:
+                    result["state"] = "ERROR"
+                    result["reason"] = "unhandled read_request_list_state exception"
+                    result["exception"] = str(e)
+                    perf["final_state"] = "ERROR"
+                finally:
+                    perf["total_ms"] = int((time.perf_counter() - ts0) * 1000)
+                return result, perf
+
+            def emit_request_logs(read_result, perf_result, legacy_result):
+                read_log = (
+                    "[REQUEST_READ] "
+                    f"time={read_result.get('timestamp')} "
+                    f"page={read_result.get('page_name')} "
+                    f"loading={read_result.get('loading')} "
+                    f"row_count={read_result.get('row_count')} "
+                    f"empty_message={read_result.get('empty_message')} "
+                    f"state={read_result.get('state')} "
+                    f"reason=\"{read_result.get('reason')}\" "
+                    f"legacy_result={legacy_result} "
+                    f"exception={read_result.get('exception')}"
+                )
+                self.progress.emit(0, 0, read_log)
+
+                perf_log = (
+                    "[REQUEST_PERF] "
+                    f"cycle_id={perf_result.get('cycle_id')} "
+                    f"time={perf_result.get('timestamp')} "
+                    f"refresh_ms={perf_result.get('refresh_ms')} "
+                    f"loading_check_ms={perf_result.get('loading_check_ms')} "
+                    f"row_count_ms={perf_result.get('row_count_ms')} "
+                    f"empty_msg_ms={perf_result.get('empty_msg_ms')} "
+                    f"state_decision_ms={perf_result.get('state_decision_ms')} "
+                    f"total_ms={perf_result.get('total_ms')} "
+                    f"final_state={perf_result.get('final_state')}"
+                )
+                self.progress.emit(0, 0, perf_log)
+
             stage = "OPEN_LOGIN_PAGE"
             d.get(BUS_LOGIN_URL)
             WebDriverWait(d, 20).until(EC.presence_of_element_located((By.ID, "windowsaccount")))
@@ -2794,7 +3003,9 @@ class CreateWorker(QObject):
             WebDriverWait(d, 20).until(EC.url_contains("Common"))
 
             stage = "OPEN_NEW_PAGE"
+            refresh_t0 = time.perf_counter()
             d.get(BUS_NEW_URL)
+            refresh_ms = int((time.perf_counter() - refresh_t0) * 1000)
 
             stage = "ENTER_IFRAME"
             if not enter_first_iframe(d, reload_url=BUS_NEW_URL):
@@ -2826,6 +3037,20 @@ class CreateWorker(QObject):
                 )
             except Exception:
                 time.sleep(0.8)
+
+            read_state = None
+            read_perf = None
+            if read_mode in ("observe_only", "state_driven"):
+                read_state, read_perf = read_request_list_state(d)
+                read_perf["refresh_ms"] = refresh_ms
+                if read_mode == "state_driven":
+                    st = (read_state.get("state") or "").upper()
+                    if st == "EMPTY_CONFIRMED":
+                        emit_request_logs(read_state, read_perf, legacy_result="SKIPPED_BY_STATE")
+                        return False, "NO_REQUEST_CONFIRMED @ state_driven"
+                    if st == "ERROR":
+                        emit_request_logs(read_state, read_perf, legacy_result="SKIPPED_BY_STATE")
+                        return False, f"REQUEST_READ_ERROR @ state_driven: {read_state.get('exception')}"
 
             stage = "WAIT_ROWS_BEFORE"
 
@@ -2868,6 +3093,10 @@ class CreateWorker(QObject):
 
             stage = "FIND_TARGET_ROW_BEFORE"
             target, samples, proj_digits = find_target_row(d, proj_code)
+
+            legacy_result = "HAS_REQUEST" if target else "NO_REQUEST"
+            if read_mode in ("observe_only", "state_driven") and read_state and read_perf:
+                emit_request_logs(read_state, read_perf, legacy_result=legacy_result)
 
             if not target:
                 stage = "RETRY_SEARCH_BEFORE"
@@ -4731,7 +4960,7 @@ class AccessManager(QMainWindow):
         self.log.insertPlainText(block)
         self.log.ensureCursorVisible()
 
-        fn = os.path.join(LOG_DIR, f"access_{datetime.date.today().strftime('%Y%m%d')}.log")
+        fn = os.path.join(ACCESS_LOG_DIR, f"access_{datetime.date.today().strftime('%Y%m%d')}.log")
         with open(fn, "a", encoding="utf-8") as f:
             f.write(block)
 
